@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Quiz Áudio — 28 Palavras (Acessível)</title>
+<style>
+  :root{ --bg:#f3fbff; --card:#ffffff; --accent:#0b5f7a; --accent2:#0f7aa6; --text:#04232f }
+  body{font-family: system-ui, "Segoe UI", Arial; background:var(--bg); color:var(--text); margin:0; padding:18px; max-width:900px; margin-left:auto; margin-right:auto}
+  h1{margin:0 0 10px; font-size:26px; color:var(--accent)}
+  .card{background:var(--card); padding:18px; border-radius:12px; box-shadow:0 6px 18px rgba(11,95,122,0.06); margin-bottom:12px}
+  label{display:block; font-size:18px; margin-bottom:8px}
+  input, textarea, select {font-size:18px; padding:10px; border-radius:8px; border:1px solid #dbeef6; width:100%}
+  .controls{display:flex; gap:10px; margin-top:10px; flex-wrap:wrap}
+  button{font-size:20px; padding:14px 18px; border-radius:12px; border:none; cursor:pointer}
+  .btn-primary{background:var(--accent); color:#fff}
+  .btn-secondary{background:#6c757d; color:#fff}
+  .big-choice{display:block; width:100%; text-align:center; padding:18px; font-size:24px; border-radius:12px; background:#fff; border:2px solid #e6f4f8; margin-bottom:12px; cursor:pointer}
+  .big-choice:focus{outline:4px solid #cfeef9}
+  .big-choice.selected{border-color:var(--accent2); background:#f0fbff}
+  .listen{background:#fff;border:3px solid var(--accent);color:var(--accent); padding:10px 14px;border-radius:12px; font-size:18px}
+  .center{display:flex; gap:12px; align-items:center}
+  .small{font-size:14px; color:#46606b}
+  .result{background:#eef9f5;border:1px solid #cfeee0;padding:12px;border-radius:10px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+  <h1>Quiz Áudio — Método das 28 Palavras</h1>
+
+  <div class="card" id="config">
+    <label>Nome do aluno
+      <input id="studentName" type="text" placeholder="Nome do aluno (ex.: João)"/>
+    </label>
+    <div class="controls">
+      <label style="flex:1">Número de perguntas
+        <input id="numQuestions" type="number" min="1" max="28" value="8" style="width:120px"/>
+      </label>
+      <label style="flex:1">Repetições automáticas da palavra
+        <input id="autoRepeat" type="number" min="0" max="5" value="1" style="width:120px"/>
+      </label>
+    </div>
+    <label style="margin-top:10px">Lista das palavras (separadas por vírgula) — podes editar</label>
+    <textarea id="wordList" rows="3"></textarea>
+    <div class="controls" style="margin-top:12px">
+      <button class="btn-primary" id="loadDefault">Carregar 28 palavras padrão</button>
+      <button class="btn-secondary" id="saveList">Guardar lista</button>
+      <button class="btn-primary" id="startBtn" style="margin-left:auto">Iniciar modo áudio</button>
+    </div>
+    <p class="small" style="margin-top:8px">Ao iniciar, cada pergunta tocará automaticamente a palavra. O aluno toca no botão grande correspondente à resposta.</p>
+  </div>
+
+  <div id="quizArea" class="card hidden" aria-live="polite"></div>
+  <div id="resultArea" class="card hidden" aria-live="polite"></div>
+
+<script>
+/* Quiz áudio — uma pergunta por ecrã, auto-play da palavra, 4 opções grandes, síntese de voz */
+const DEFAULT_WORDS = ["ovo","galinha","mão","maçã","pato","casa","sol","lua","rio","mar","flor","carro","bola","gato","rato","livro","mesa","cadeira","porta","janela","sapato","boneca","fruta","peixe","pão","leite","uva","cão"];
+
+function $(id){ return document.getElementById(id) }
+function saveWords(arr){ localStorage.setItem('quiz_audio.words', JSON.stringify(arr)) }
+function loadWords(){ const r = localStorage.getItem('quiz_audio.words'); return r?JSON.parse(r):DEFAULT_WORDS.slice() }
+function speak(text){ if(!('speechSynthesis' in window)) return; const u=new SpeechSynthesisUtterance(text); const voices=window.speechSynthesis.getVoices(); let v=voices.find(x=>/pt[-_]?pt/i.test(x.lang))||voices.find(x=>/pt/i.test(x.lang))||voices[0]; if(v) u.voice=v; u.rate=0.95; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); }
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  $('wordList').value = loadWords().join(', ');
+});
+
+$('loadDefault').onclick = ()=>{ $('wordList').value = DEFAULT_WORDS.join(', '); saveWords(DEFAULT_WORDS); alert('Lista padrão carregada'); }
+$('saveList').onclick = ()=>{ const arr = $('wordList').value.split(',').map(s=>s.trim()).filter(Boolean); if(arr.length===0){alert('Lista vazia'); return;} saveWords(arr); alert('Lista guardada') }
+
+let quiz = null;
+
+$('startBtn').onclick = ()=> {
+  const name = $('studentName').value.trim();
+  if(!name){ alert('Escreve o nome do aluno'); $('studentName').focus(); return; }
+  startAudioQuiz();
+}
+
+function startAudioQuiz(){
+  const words = $('wordList').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(words.length===0){ alert('Lista vazia'); return; }
+  const num = Math.min(words.length, Math.max(1, parseInt($('numQuestions').value)||8));
+  const pool = shuffle(words.slice());
+  const selected = pool.slice(0, num);
+  // build questions with 4 options each (correct + 3 distractors)
+  const questions = selected.map((w, i)=>{
+    const others = words.filter(x=>x!==w);
+    shuffle(others);
+    const opts = [w].concat(others.slice(0,3)).slice(0,4);
+    shuffle(opts);
+    return {id:i+1, word:w, options:opts, correct:w}
+  });
+  quiz = { student: $('studentName').value.trim(), questions, idx:0, answers:[] , autoRepeat: Math.max(0, parseInt($('autoRepeat').value)||0) };
+  showQuestion(0);
+}
+
+function showQuestion(i){
+  const area = $('quizArea'); area.classList.remove('hidden'); $('resultArea').classList.add('hidden');
+  area.innerHTML = '';
+  const q = quiz.questions[i];
+  const header = document.createElement('div'); header.innerHTML = `<h2>Pergunta ${i+1} / ${quiz.questions.length}</h2><p style="font-size:18px">Aluno: <strong>${quiz.student}</strong></p>`; area.appendChild(header);
+
+  // play controls
+  const playDiv = document.createElement('div'); playDiv.className='center'; playDiv.style.margin='12px 0';
+  const playBtn = document.createElement('button'); playBtn.className='listen'; playBtn.textContent='🔊 Ouvir palavra';
+  playDiv.appendChild(playBtn);
+  area.appendChild(playDiv);
+
+  // big options
+  const optsDiv = document.createElement('div'); optsDiv.style.marginTop='12px';
+  q.options.forEach(opt=>{
+    const btn = document.createElement('button');
+    btn.className='big-choice';
+    btn.setAttribute('data-val', opt);
+    btn.innerHTML = `<div style="font-size:26px">${opt}</div>`;
+    btn.onclick = ()=>{ selectOption(i, opt, btn) };
+    optsDiv.appendChild(btn);
+  });
+  area.appendChild(optsDiv);
+
+  // navigation
+  const nav = document.createElement('div'); nav.className='controls'; nav.style.marginTop='12px';
+  const repeat = document.createElement('button'); repeat.className='btn-secondary'; repeat.textContent='Repetir palavra'; repeat.onclick = ()=> playWord(q.word);
+  const prev = document.createElement('button'); prev.className='btn-secondary'; prev.textContent='Anterior'; prev.onclick = ()=> { if(quiz.idx>0){ quiz.idx--; showQuestion(quiz.idx) } };
+  const skip = document.createElement('button'); skip.className='btn-secondary'; skip.textContent='Pular'; skip.onclick = ()=> { quiz.answers[i] = { chosen:null, correct:false }; nextOrFinish(); };
+  const cancel = document.createElement('button'); cancel.className='btn-secondary'; cancel.textContent='Terminar & mostrar resultados'; cancel.onclick = ()=> gradeQuiz();
+  nav.appendChild(repeat); nav.appendChild(prev); nav.appendChild(skip); nav.appendChild(cancel);
+  area.appendChild(nav);
+
+  // autoplay the word (with optional repeats)
+  let repeats = 0;
+  function doPlay(){
+    playWord(q.word);
+    repeats++;
+    if(repeats <= quiz.autoRepeat){
+      // schedule next
+      const delay = 900 + (q.word.length * 60); // small heuristic delay
+      setTimeout(()=>{ if(repeats <= quiz.autoRepeat) doPlay(); }, delay);
+    }
+  }
+  doPlay();
+  // also make the big "Ouvir palavra" button play
+  playBtn.onclick = ()=> playWord(q.word);
+}
+
+function playWord(w){
+  speak(w);
+}
+
+function selectOption(qIndex, choice, btn){
+  // visual selection
+  const parent = btn.parentElement;
+  parent.querySelectorAll('.big-choice').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const q = quiz.questions[qIndex];
+  const correct = (choice === q.correct);
+  quiz.answers[qIndex] = { chosen: choice, correct };
+  // brief feedback (color) and advance after small delay
+  if(correct){
+    btn.style.borderColor = '#2ea44f';
+    btn.style.boxShadow = '0 6px 12px rgba(46,164,79,0.08)';
+  } else {
+    btn.style.borderColor = '#d33';
+    // show correct option highlight
+    Array.from(parent.querySelectorAll('.big-choice')).forEach(b=>{
+      if(b.getAttribute('data-val') === q.correct) { b.style.borderColor = '#2ea44f'; }
+    });
+  }
+  // proceed to next question after 750-1000ms to let student register
+  setTimeout(()=> nextOrFinish(), 900);
+}
+
+function nextOrFinish(){
+  if(quiz.idx + 1 < quiz.questions.length){
+    quiz.idx++;
+    showQuestion(quiz.idx);
+  } else {
+    gradeQuiz();
+  }
+}
+
+function gradeQuiz(){
+  // compute
+  let correct = 0;
+  const details = [];
+  quiz.questions.forEach((q, i)=>{
+    const a = quiz.answers[i] || { chosen: null, correct:false };
+    if(a.correct) correct++;
+    details.push({word: q.word, chosen: a.chosen, correct: !!a.correct});
+  });
+  const total = quiz.questions.length;
+  const score = Math.round((correct/total*10)*100)/100;
+  const result = { student: quiz.student, date: new Date().toISOString(), correct, total, score, details };
+  localStorage.setItem('quiz_audio.last', JSON.stringify(result));
+  showResults(result);
+}
+
+function showResults(r){
+  $('quizArea').classList.add('hidden');
+  const area = $('resultArea'); area.classList.remove('hidden'); area.innerHTML = '';
+  const h = document.createElement('div'); h.innerHTML = `<h2>Resultado — ${r.student}</h2><div class="result"><p style="font-size:20px"><strong>Pontuação:</strong> ${r.score.toFixed(2)} / 10</p><p>${r.correct} de ${r.total} corretas</p></div>`; area.appendChild(h);
+  const list = document.createElement('div'); list.style.marginTop='12px';
+  r.details.forEach(d=>{
+    const li = document.createElement('div'); li.style.margin='6px 0';
+    li.innerHTML = `<strong>${d.word}</strong> — escolhido: <em>${d.chosen || '—'}</em> — ${d.correct ? '<span style="color:green">Correto</span>' : '<span style="color:red">Incorreto</span>'}`;
+    list.appendChild(li);
+  });
+  area.appendChild(list);
+  // observations and report
+  const obs = document.createElement('div'); obs.style.marginTop='12px';
+  obs.innerHTML = `<label class="small">Observações do professor</label><textarea id="teacherObs" style="width:100%; font-size:16px; padding:10px; border-radius:8px" rows="4"></textarea>`;
+  area.appendChild(obs);
+  const controls = document.createElement('div'); controls.className='controls'; controls.style.marginTop='12px';
+  const rpt = document.createElement('button'); rpt.className='btn-primary'; rpt.textContent='Gerar relatório (.doc)';
+  const again = document.createElement('button'); again.className='btn-secondary'; again.textContent='Fazer novamente';
+  controls.appendChild(rpt); controls.appendChild(again);
+  area.appendChild(controls);
+  rpt.onclick = ()=> downloadReport(Object.assign({}, r, { observations: $('teacherObs').value || '' }));
+  again.onclick = ()=> { location.reload(); }
+}
+
+// download report (.doc) as HTML blob
+function downloadReport(r){
+  let html = '<html><head><meta charset="utf-8"></head><body>';
+  html += `<h1>Relatório — Quiz Áudio (28 Palavras)</h1>`;
+  html += `<p><strong>Aluno:</strong> ${r.student} &nbsp;&nbsp; <strong>Data:</strong> ${new Date(r.date).toLocaleString()}</p>`;
+  html += `<h2>Pontuação: ${r.score.toFixed(2)} / 10</h2>`;
+  html += '<h3>Detalhe</h3><ul>';
+  r.details.forEach(d=>{ html += `<li><strong>${d.word}</strong> — escolhido: ${d.chosen || '—'} — ${d.correct? 'Correto':'Incorreto'}</li>` });
+  html += '</ul>';
+  html += `<h3>Observações do professor</h3><p>${r.observations || '—'}</p>`;
+  html += `<p style="margin-top:30px">Assinatura do/a professor/a: ____________________</p>`;
+  html += '</body></html>';
+  const blob = new Blob([html], { type: 'application/msword' });
+  const fname = `relatorio_audio_${r.student.replace(/\s+/g,'_')}.doc`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1200);
+}
+
+// helpers
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a }
+
+// keyboard accessibility: allow number keys 1-4 to pick options
+document.addEventListener('keydown', (e)=>{
+  if(!quiz) return;
+  const idx = quiz.idx;
+  if(!document.querySelector('.big-choice')) return;
+  const choices = document.querySelectorAll('.big-choice');
+  if(e.key >= '1' && e.key <= '4'){
+    const i = parseInt(e.key)-1;
+    if(i < choices.length) choices[i].click();
+  }
+});
+
+// ensure voices loaded for some browsers
+window.speechSynthesis.onvoiceschanged = ()=>{ /* no-op to populate voices */ };
+
+</script>
+</body>
+</html>
